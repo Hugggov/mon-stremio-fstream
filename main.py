@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
-import asyncio
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"])
@@ -23,6 +22,7 @@ def get_real_target():
 
 def get_imdb(title):
     try:
+        # On cherche l'ID IMDb via TMDB pour que Stremio reconnaisse le film
         url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={title}&language=fr-FR"
         res = requests.get(url, timeout=3).json()
         if res.get("results"):
@@ -32,16 +32,22 @@ def get_imdb(title):
     except: pass
     return None
 
+@app.get("/")
+async def root():
+    return {"message": "Serveur FStream V12 Actif", "instruction": "Ajoutez /manifest.json à l'URL dans Stremio"}
+
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.clone.v11",
-        "version": "11.0.0",
-        "name": "FStream : Listes Identiques",
-        "description": "Scan direct de French Stream avec IDs IMDb fixes",
+        "id": "org.fstream.perfect.v12",
+        "version": "12.0.0",
+        "name": "FStream : Listes Officielles",
+        "description": "Tes listes FrenchStream sans le bug du chat bleu",
         "resources": ["catalog"],
         "types": ["movie"],
-        "catalogs": [{"type": "movie", "id": "fs_latest", "name": "FStream : Derniers Ajouts"}]
+        "catalogs": [
+            {"type": "movie", "id": "fs_films", "name": "FStream : Derniers Films"}
+        ]
     }
 
 @app.get("/catalog/movie/{id}.json")
@@ -52,7 +58,6 @@ async def catalog(id: str):
     try:
         res = requests.get(f"{target}/films/", headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # On cible exactement les blocs de films du site
         items = soup.find_all('a', title=True)
         
         metas = []
@@ -61,7 +66,7 @@ async def catalog(id: str):
             if not img: continue
             
             title = item['title'].replace("en streaming", "").strip()
-            # On cherche l'ID IMDb pour que Stremio reconnaisse le film
+            # On mappe sur l'ID IMDb pour éviter le "Aucun addon demandé"
             imdb_id = get_imdb(title)
             
             if imdb_id:
@@ -69,15 +74,15 @@ async def catalog(id: str):
                 if poster and not poster.startswith('http'): poster = target + poster
                 
                 metas.append({
-                    "id": imdb_id, # C'est ici qu'on tue le chat bleu
+                    "id": imdb_id,
                     "type": "movie",
                     "name": title,
                     "poster": poster
                 })
-            if len(metas) >= 40: break # Limite pour éviter les lags
+            if len(metas) >= 40: break 
             
         return {"metas": metas}
-    except Exception as e:
+    except:
         return {"metas": []}
 
 if __name__ == "__main__":
