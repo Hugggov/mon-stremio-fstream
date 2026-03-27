@@ -7,6 +7,7 @@ import uvicorn
 import os
 import json
 import asyncio
+import random
 
 app = FastAPI()
 
@@ -17,13 +18,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Fichier de sauvegarde pour ne jamais être vide au démarrage
 DB_FILE = "database.json"
 
 def load_db():
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except: pass
     return {
         "fs_movie_all": [], "fs_series_all": [],
         "fs_sci_fi_movie": [], "fs_fantastique_movie": [],
@@ -32,31 +34,43 @@ def load_db():
 
 db = load_db()
 
-def save_db():
-    with open(DB_FILE, "w") as f:
-        json.dump(db, f)
-
-def get_live_url():
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        r = requests.get("https://fstream.net/", headers=headers, timeout=10)
-        return r.url.strip('/')
-    except:
-        return "https://fstream.net"
+def get_headers():
+    """Génère des headers de navigation humaine pour éviter le blocage"""
+    user_agents = [
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ]
+    return {
+        'User-Agent': random.choice(user_agents),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'fr,fr-FR;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
 
 def scrape_category(base_url, path, catalog_id, max_pages=20):
     temp_list = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
     is_series = "series" in path or "series" in catalog_id
 
     for page in range(1, max_pages + 1):
         try:
             url = f"{base_url}/{path}/page/{page}/"
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code != 200: break
+            # On utilise une session pour garder les cookies comme un humain
+            session = requests.Session()
+            res = session.get(url, headers=get_headers(), timeout=15)
+            
+            if res.status_code != 200:
+                print(f"Erreur {res.status_code} sur {url}")
+                continue
+                
             soup = BeautifulSoup(res.text, 'html.parser')
             items = soup.select('.shortstory')
-            if not items: break
+            
+            if not items:
+                print(f"Aucun élément trouvé sur {url}. Le site a peut-être changé de structure.")
+                break
+                
             for item in items:
                 t = item.find('h2')
                 i = item.find('img')
@@ -64,20 +78,28 @@ def scrape_category(base_url, path, catalog_id, max_pages=20):
                     name = t.text.strip()
                     img = i['src']
                     if not img.startswith('http'): img = base_url + (img if img.startswith('/') else '/' + img)
+                    
                     temp_list.append({
                         "id": f"fs_{name.replace(' ', '_')[:30]}",
                         "type": "series" if is_series else "movie",
                         "name": name,
                         "poster": img,
-                        "description": f"FStream - {catalog_id.upper()}"
+                        "description": f"FStream Elite - {catalog_id.replace('fs_', '').upper()}"
                     })
-        except: continue
+            # Petite pause entre les pages pour ne pas se faire repérer
+            asyncio.run(asyncio.sleep(random.uniform(0.5, 1.5)))
+        except Exception as e:
+            print(f"Erreur : {e}")
+            continue
+    
     if temp_list:
         db[catalog_id] = temp_list
-        save_db()
+        with open(DB_FILE, "w") as f:
+            json.dump(db, f)
 
 def update_all_data():
-    base = get_live_url()
+    base = "https://fstream.net" # Fixé pour éviter les erreurs de redirection
+    # Dossiers mis à jour selon fstream.net
     scrape_category(base, "films-streaming", "fs_movie_all", 20)
     scrape_category(base, "series-streaming", "fs_series_all", 20)
     scrape_category(base, "science-fiction-streaming", "fs_sci_fi_movie", 20)
@@ -90,16 +112,15 @@ async def startup_event():
     scheduler = BackgroundScheduler()
     scheduler.add_job(update_all_data, 'interval', hours=2)
     scheduler.start()
-    # On lance le scan en tâche de fond pour mettre à jour la sauvegarde
     asyncio.create_task(asyncio.to_thread(update_all_data))
 
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.elite.v20.fix",
-        "version": "20.1.0",
+        "id": "org.fstream.elite.v20.stealth",
+        "version": "20.2.0",
         "name": "FStream ELITE 20",
-        "description": "Films & Séries (Scan 20p) - Stable",
+        "description": "Films & Séries (Mode Stealth) - 20 pages",
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": [
