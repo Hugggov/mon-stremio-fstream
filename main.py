@@ -1,57 +1,84 @@
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
+import asyncio
 
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+
+TMDB_API_KEY = "1863334617e9f45fcba4edb10d96639e"
 
 def get_real_target():
     try:
-        res = requests.get("https://fstream.net", timeout=10)
+        res = requests.get("https://fstream.net", timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         for link in soup.find_all('a', href=True):
-            h = link['href']
-            if any(ext in h for ext in [".lol", ".me", ".pw", ".tf"]) and "fstream.net" not in h:
-                return h.strip('/')
+            if any(ext in link['href'] for ext in [".lol", ".me", ".tf"]) and "fstream.net" not in link['href']:
+                return link['href'].strip('/')
     except: pass
     return "https://fs18.lol"
 
-@app.get("/search")
-async def search_for_aio(keyword: str):
-    """Route que AIO Metadata va interroger"""
+def get_imdb(title):
+    try:
+        url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={title}&language=fr-FR"
+        res = requests.get(url, timeout=3).json()
+        if res.get("results"):
+            tid = res["results"][0]["id"]
+            ext = requests.get(f"https://api.themoviedb.org/3/movie/{tid}/external_ids?api_key={TMDB_API_KEY}", timeout=3).json()
+            return ext.get("imdb_id")
+    except: pass
+    return None
+
+@app.get("/manifest.json")
+async def manifest():
+    return {
+        "id": "org.fstream.clone.v11",
+        "version": "11.0.0",
+        "name": "FStream : Listes Identiques",
+        "description": "Scan direct de French Stream avec IDs IMDb fixes",
+        "resources": ["catalog"],
+        "types": ["movie"],
+        "catalogs": [{"type": "movie", "id": "fs_latest", "name": "FStream : Derniers Ajouts"}]
+    }
+
+@app.get("/catalog/movie/{id}.json")
+async def catalog(id: str):
     target = get_real_target()
-    # On encode la recherche pour French Stream
-    search_url = f"{target}/index.php?do=search&subaction=search&story={keyword}"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
-    results = []
     try:
-        res = requests.get(search_url, headers=headers, timeout=10)
+        res = requests.get(f"{target}/films/", headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # On cherche les liens de films/séries
-        items = soup.select('div.mov-t.now-e a') or soup.find_all('a', title=True)
+        # On cible exactement les blocs de films du site
+        items = soup.find_all('a', title=True)
         
+        metas = []
         for item in items:
-            title = item.get('title') or item.text
-            if not title or len(title) < 3: continue
-            title = title.replace("en streaming", "").strip()
+            img = item.find('img')
+            if not img: continue
             
-            link = item['href']
-            if not link.startswith('http'): link = target + link
+            title = item['title'].replace("en streaming", "").strip()
+            # On cherche l'ID IMDb pour que Stremio reconnaisse le film
+            imdb_id = get_imdb(title)
             
-            results.append({
-                "title": title,
-                "url": link,
-                "source": "FrenchStream"
-            })
-    except: pass
-    # AIO attend une liste de résultats
-    return results[:10]
-
-@app.get("/")
-async def root():
-    return {"message": "FStream Bridge for AIO is running"}
+            if imdb_id:
+                poster = img.get('data-src') or img.get('src')
+                if poster and not poster.startswith('http'): poster = target + poster
+                
+                metas.append({
+                    "id": imdb_id, # C'est ici qu'on tue le chat bleu
+                    "type": "movie",
+                    "name": title,
+                    "poster": poster
+                })
+            if len(metas) >= 40: break # Limite pour éviter les lags
+            
+        return {"metas": metas}
+    except Exception as e:
+        return {"metas": []}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
