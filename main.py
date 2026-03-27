@@ -6,56 +6,42 @@ import uvicorn
 import os
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
 TMDB_API_KEY = "1863334617e9f45fcba4edb10d96639e"
 
 def get_real_target():
-    try:
-        res = requests.get("https://fstream.net", timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for link in soup.find_all('a', href=True):
-            h = link['href']
-            if any(ext in h for ext in [".lol", ".me", ".tf"]) and "fstream.net" not in h:
-                return h.strip('/')
-    except: pass
-    return "https://fs18.lol"
+    return "https://fs18.lol" # On force l'URL pour gagner du temps au démarrage
 
 def get_imdb(title):
     try:
         url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={title}&language=fr-FR"
-        res = requests.get(url, timeout=3).json()
+        res = requests.get(url, timeout=2).json()
         if res.get("results"):
             tid = res["results"][0]["id"]
-            ext = requests.get(f"https://api.themoviedb.org/3/movie/{tid}/external_ids?api_key={TMDB_API_KEY}", timeout=3).json()
+            ext = requests.get(f"https://api.themoviedb.org/3/movie/{tid}/external_ids?api_key={TMDB_API_KEY}", timeout=2).json()
             return ext.get("imdb_id")
     except: pass
     return None
 
-@app.get("/")
-async def root():
-    return {"status": "V12.1 Turbo Active", "tip": "Collez /manifest.json dans Stremio"}
-
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.turbo.v12",
-        "version": "12.1.0",
-        "name": "FStream : Turbo",
-        "description": "Listes instantanées sans bug",
-        "resources": ["catalog"],
+        "id": "org.fstream.instant.v13",
+        "version": "13.0.0",
+        "name": "FStream : Instant",
+        "description": "Affichage immédiat des listes",
+        "resources": ["catalog", "meta"],
         "types": ["movie"],
-        "catalogs": [{"type": "movie", "id": "fs_turbo", "name": "FStream : Derniers Films"}]
+        "catalogs": [{"type": "movie", "id": "fs_instant", "name": "FStream : Films"}]
     }
 
 @app.get("/catalog/movie/{id}.json")
 async def catalog(id: str):
     target = get_real_target()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # On force la lecture immédiate du site
-        res = requests.get(f"{target}/films/", headers=headers, timeout=10)
+        res = requests.get(f"{target}/films/", headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         items = soup.find_all('a', title=True)
         
@@ -63,26 +49,33 @@ async def catalog(id: str):
         for item in items:
             img = item.find('img')
             if not img: continue
-            
             title = item['title'].replace("en streaming", "").strip()
-            # On cherche l'IMDb pour que Wastream s'active
-            imdb_id = get_imdb(title)
+            poster = img.get('data-src') or img.get('src')
+            if poster and not poster.startswith('http'): poster = target + poster
             
-            if imdb_id:
-                poster = img.get('data-src') or img.get('src')
-                if poster and not poster.startswith('http'): poster = target + poster
-                
-                metas.append({
-                    "id": imdb_id,
-                    "type": "movie",
-                    "name": title,
-                    "poster": poster
-                })
-            if len(metas) >= 30: break 
-            
+            # On utilise un ID temporaire ultra-rapide pour que Stremio affiche la liste direct
+            metas.append({
+                "id": f"fstr_{title.replace(' ', '_')}", 
+                "type": "movie",
+                "name": title,
+                "poster": poster
+            })
+            if len(metas) >= 50: break
         return {"metas": metas}
     except:
         return {"metas": []}
+
+@app.get("/meta/movie/{id}.json")
+async def meta(id: str):
+    # Quand tu cliques sur le film, ON CHERCHE LE VRAI ID IMDB
+    title = id.replace("fstr_", "").replace("_", " ")
+    imdb_id = get_imdb(title)
+    
+    if imdb_id:
+        # On redirige Stremio vers la fiche officielle IMDb
+        return {"meta": {"id": imdb_id, "type": "movie", "name": title}}
+    
+    return {"meta": {"id": id, "type": "movie", "name": title}}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
