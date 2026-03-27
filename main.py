@@ -89,3 +89,15 @@ def catalog(type: str, id: str):
     cache[cache_key] = scraped_data
     
     return {"metas": scraped_data}
+from fastapi.middleware.cors import CORSMiddleware # Ajoute ça en haut
+
+app = FastAPI()
+
+# Ajoute ce bloc juste après 'app = FastAPI()'
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+
+    
