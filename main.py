@@ -16,12 +16,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 DB_FILE = "database.json"
 TMDB_API_KEY = "1863334617e9f45fcba4edb10d96639e"
 
-# Initialisation propre de la base
+# Initialisation de la base de données
 db = {"films_all": [], "series_all": []}
 if os.path.exists(DB_FILE):
     try:
         with open(DB_FILE, "r") as f:
             db = json.load(f)
+            print(f"Chargement réussi : {len(db['films_all'])} films en mémoire.")
     except: pass
 
 GENRES = ["Action", "Animation", "Aventure", "Comédie", "Crime", "Drame", "Fantastique", "Horreur", "Mystère", "Romance", "Science-Fiction", "Thriller"]
@@ -54,10 +55,10 @@ def get_imdb_id(title, is_movie=True):
 def update_worker():
     global db
     target = get_real_target()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
     for cat_name, is_movie, db_key in [("films", True, "films_all"), ("series", False, "series_all")]:
-        new_items = []
+        new_list = []
         for page in range(1, 31):
             try:
                 url = f"{target}/{cat_name}/page/{page}/"
@@ -65,47 +66,52 @@ def update_worker():
                 if res.status_code != 200: break
                 
                 soup = BeautifulSoup(res.text, 'html.parser')
-                links = soup.find_all('a')
+                # Sélecteur large pour ne rien rater
+                items = soup.find_all('a')
                 
-                for link in links:
+                for link in items:
                     img = link.find('img')
                     if not img: continue
                     
-                    name = link.get('title') or img.get('alt')
-                    if not name or len(name) < 3: continue
-                    name = name.replace("en streaming", "").strip()
+                    title = link.get('title') or img.get('alt') or ""
+                    if len(title) < 3 or "streaming" in title.lower() and len(title) < 10: continue
+                    title = title.replace("en streaming", "").strip()
 
-                    # ÉVITER LES DOUBLONS ET MÉLANGES
-                    if any(x['name'] == name for x in new_items): continue
+                    # Vérifier si déjà en base pour gagner du temps
+                    existing = next((x for x in db[db_key] if x["name"] == title), None)
                     
-                    # Récupération ID (Cache ou TMDB)
-                    existing = next((x for x in db[db_key] if x["name"] == name), None)
                     if existing and existing["id"].startswith("tt"):
-                        item_id = existing["id"]
+                        item_obj = existing
                     else:
-                        imdb = get_imdb_id(name, is_movie)
-                        item_id = imdb if imdb else f"fs_{hash(name)}"
-                        time.sleep(0.2)
+                        imdb = get_imdb_id(title, is_movie)
+                        # CRUCIAL : Si pas d'IMDb, on met un ID temporaire propre
+                        item_id = imdb if imdb else f"fs_{hash(title)}"
+                        
+                        poster = img.get('data-src') or img.get('src') or ""
+                        if poster and not poster.startswith('http'):
+                            poster = target + (poster if poster.startswith('/') else '/' + poster)
 
-                    poster = img.get('data-src') or img.get('src')
-                    if poster and not poster.startswith('http'):
-                        poster = target + (poster if poster.startswith('/') else '/' + poster)
+                        item_obj = {
+                            "id": item_id,
+                            "type": "movie" if is_movie else "series",
+                            "name": title,
+                            "poster": poster,
+                            "genres": [g for g in GENRES if g.lower() in title.lower()] or ["Nouveauté"],
+                            "description": f"FStream Ultimate - Source {target}"
+                        }
+                        time.sleep(0.2) # Anti-ban TMDB
 
-                    new_items.append({
-                        "id": item_id,
-                        "type": "movie" if is_movie else "series",
-                        "name": name,
-                        "poster": poster,
-                        "genres": [g for g in GENRES if g.lower() in name.lower()] or ["Divers"],
-                        "description": f"Source FStream ({cat_name})"
-                    })
+                    if not any(x['name'] == title for x in new_list):
+                        new_list.append(item_obj)
                 
-                # Mise à jour progressive du catalogue
-                db[db_key] = new_items
+                # Sauvegarde à chaque page pour la sécurité
+                db[db_key] = new_list
                 with open(DB_FILE, "w") as f: json.dump(db, f)
                 
-            except: continue
-    print("✅ Scan V7.3 Terminé.")
+            except Exception as e:
+                print(f"Erreur page {page}: {e}")
+                continue
+    print(f"✅ Scan ULTIMATE Terminé : {len(db['films_all'])} Films")
 
 @app.on_event("startup")
 async def startup():
@@ -117,10 +123,10 @@ async def startup():
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.final.v73",
-        "version": "7.3.0",
-        "name": "FStream : Elite Pro",
-        "description": "Films & Séries Bien Triés - Compatible Wastream",
+        "id": "org.fstream.ULTIMATE.v8",
+        "version": "8.0.0",
+        "name": "FStream : ULTIMATE",
+        "description": "Version V8 - IDs IMDb Fixés pour Wastream",
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": [
@@ -132,19 +138,20 @@ async def manifest():
 @app.get("/catalog/{type}/{id}.json")
 @app.get("/catalog/{type}/{id}/{extra}.json")
 async def get_catalog(type: str, id: str, extra: str = None):
-    # On s'assure de ne renvoyer que le type demandé
-    items = db.get(id, [])
-    filtered_by_type = [i for i in items if i["type"] == type]
+    # Filtrage strict par type pour Stremio
+    content = db.get(id, [])
+    metas = [i for i in content if i["type"] == type]
     
     if extra and "genre=" in extra:
         g = extra.split("=")[1]
-        filtered_by_type = [i for i in filtered_by_type if g in i.get("genres", [])]
+        metas = [i for i in metas if g in i.get("genres", [])]
         
-    return {"metas": filtered_by_type}
+    return {"metas": metas}
 
 @app.get("/")
 async def status():
-    return {"films": len(db["films_all"]), "series": len(db["series_all"])}
+    return {"status": "V8 Active", "films": len(db["films_all"]), "series": len(db["series_all"])}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    
