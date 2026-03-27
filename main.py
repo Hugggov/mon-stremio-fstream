@@ -6,7 +6,7 @@ import uvicorn
 import os
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 TMDB_API_KEY = "1863334617e9f45fcba4edb10d96639e"
 
@@ -15,14 +15,14 @@ def get_real_target():
         res = requests.get("https://fstream.net", timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         for link in soup.find_all('a', href=True):
-            if any(ext in link['href'] for ext in [".lol", ".me", ".tf"]) and "fstream.net" not in link['href']:
-                return link['href'].strip('/')
+            h = link['href']
+            if any(ext in h for ext in [".lol", ".me", ".tf"]) and "fstream.net" not in h:
+                return h.strip('/')
     except: pass
     return "https://fs18.lol"
 
 def get_imdb(title):
     try:
-        # On cherche l'ID IMDb via TMDB pour que Stremio reconnaisse le film
         url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={title}&language=fr-FR"
         res = requests.get(url, timeout=3).json()
         if res.get("results"):
@@ -34,28 +34,27 @@ def get_imdb(title):
 
 @app.get("/")
 async def root():
-    return {"message": "Serveur FStream V12 Actif", "instruction": "Ajoutez /manifest.json à l'URL dans Stremio"}
+    return {"status": "V12.1 Turbo Active", "tip": "Collez /manifest.json dans Stremio"}
 
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.perfect.v12",
-        "version": "12.0.0",
-        "name": "FStream : Listes Officielles",
-        "description": "Tes listes FrenchStream sans le bug du chat bleu",
+        "id": "org.fstream.turbo.v12",
+        "version": "12.1.0",
+        "name": "FStream : Turbo",
+        "description": "Listes instantanées sans bug",
         "resources": ["catalog"],
         "types": ["movie"],
-        "catalogs": [
-            {"type": "movie", "id": "fs_films", "name": "FStream : Derniers Films"}
-        ]
+        "catalogs": [{"type": "movie", "id": "fs_turbo", "name": "FStream : Derniers Films"}]
     }
 
 @app.get("/catalog/movie/{id}.json")
 async def catalog(id: str):
     target = get_real_target()
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
     try:
+        # On force la lecture immédiate du site
         res = requests.get(f"{target}/films/", headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
         items = soup.find_all('a', title=True)
@@ -66,7 +65,7 @@ async def catalog(id: str):
             if not img: continue
             
             title = item['title'].replace("en streaming", "").strip()
-            # On mappe sur l'ID IMDb pour éviter le "Aucun addon demandé"
+            # On cherche l'IMDb pour que Wastream s'active
             imdb_id = get_imdb(title)
             
             if imdb_id:
@@ -79,7 +78,7 @@ async def catalog(id: str):
                     "name": title,
                     "poster": poster
                 })
-            if len(metas) >= 40: break 
+            if len(metas) >= 30: break 
             
         return {"metas": metas}
     except:
