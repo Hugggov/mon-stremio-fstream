@@ -16,20 +16,18 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 DB_FILE = "database.json"
 TMDB_API_KEY = "1863334617e9f45fcba4edb10d96639e"
 
-# Chargement de la mémoire
+# Initialisation propre de la base
+db = {"films_all": [], "series_all": []}
 if os.path.exists(DB_FILE):
     try:
         with open(DB_FILE, "r") as f:
             db = json.load(f)
-    except: db = {"films_all": [], "series_all": []}
-else:
-    db = {"films_all": [], "series_all": []}
+    except: pass
 
 GENRES = ["Action", "Animation", "Aventure", "Comédie", "Crime", "Drame", "Fantastique", "Horreur", "Mystère", "Romance", "Science-Fiction", "Thriller"]
 
 def get_real_target():
-    """Détecte l'URL de redirection stable"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         res = requests.get("https://fstream.net", headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -56,82 +54,58 @@ def get_imdb_id(title, is_movie=True):
 def update_worker():
     global db
     target = get_real_target()
-    print(f"--- 🚀 Scan Universel sur {target} ---")
-    
-    # Headers plus costauds pour éviter le blocage
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': target
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-    for cat in [("films", True, "films_all"), ("series", False, "series_all")]:
-        path, is_movie, db_key = cat
+    for cat_name, is_movie, db_key in [("films", True, "films_all"), ("series", False, "series_all")]:
         new_items = []
-        
         for page in range(1, 31):
             try:
-                url = f"{target}/{path}/page/{page}/"
+                url = f"{target}/{cat_name}/page/{page}/"
                 res = requests.get(url, headers=headers, timeout=15)
                 if res.status_code != 200: break
                 
                 soup = BeautifulSoup(res.text, 'html.parser')
-                
-                # --- SÉLECTEUR UNIVERSEL ---
-                # On cherche tous les liens (<a>) qui contiennent une image (<img>)
                 links = soup.find_all('a')
-                found_on_page = 0
                 
                 for link in links:
                     img = link.find('img')
                     if not img: continue
                     
-                    # On essaie de trouver le titre (souvent dans l'alt de l'image ou le title du lien)
                     name = link.get('title') or img.get('alt')
-                    if not name or len(name) < 3 or "streaming" in name.lower() and len(name) < 10:
-                        continue
-                    
+                    if not name or len(name) < 3: continue
                     name = name.replace("en streaming", "").strip()
-                    
-                    # Extraction du poster
-                    poster = img.get('data-src') or img.get('src')
-                    if poster and not poster.startswith('http'):
-                        poster = target + (poster if poster.startswith('/') else '/' + poster)
 
-                    # Vérification si déjà connu
+                    # ÉVITER LES DOUBLONS ET MÉLANGES
+                    if any(x['name'] == name for x in new_items): continue
+                    
+                    # Récupération ID (Cache ou TMDB)
                     existing = next((x for x in db[db_key] if x["name"] == name), None)
                     if existing and existing["id"].startswith("tt"):
                         item_id = existing["id"]
                     else:
                         imdb = get_imdb_id(name, is_movie)
                         item_id = imdb if imdb else f"fs_{hash(name)}"
-                        time.sleep(0.1)
+                        time.sleep(0.2)
 
-                    item_obj = {
+                    poster = img.get('data-src') or img.get('src')
+                    if poster and not poster.startswith('http'):
+                        poster = target + (poster if poster.startswith('/') else '/' + poster)
+
+                    new_items.append({
                         "id": item_id,
                         "type": "movie" if is_movie else "series",
                         "name": name,
                         "poster": poster,
                         "genres": [g for g in GENRES if g.lower() in name.lower()] or ["Divers"],
-                        "description": f"Source FStream - {target}"
-                    }
-                    
-                    if not any(x['name'] == name for x in new_items):
-                        new_items.append(item_obj)
-                        found_on_page += 1
-                        # Mise à jour en temps réel
-                        db[db_key] = new_items 
-
-                print(f"Page {page} ({path}) : {found_on_page} items ajoutés.")
-                if found_on_page == 0: continue # On tente quand même la page suivante
+                        "description": f"Source FStream ({cat_name})"
+                    })
                 
-                # Sauvegarde régulière
+                # Mise à jour progressive du catalogue
+                db[db_key] = new_items
                 with open(DB_FILE, "w") as f: json.dump(db, f)
-                    
-            except Exception as e:
-                print(f"Erreur page {page}: {e}")
-                continue
-
-    print(f"--- ✅ Scan fini : {len(db['films_all'])} Films / {len(db['series_all'])} Séries ---")
+                
+            except: continue
+    print("✅ Scan V7.3 Terminé.")
 
 @app.on_event("startup")
 async def startup():
@@ -143,10 +117,10 @@ async def startup():
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.universal.v7",
-        "version": "7.2.0",
-        "name": "FStream : TMDB Debrid",
-        "description": "Scanner Universel - Compatible Wastream",
+        "id": "org.fstream.final.v73",
+        "version": "7.3.0",
+        "name": "FStream : Elite Pro",
+        "description": "Films & Séries Bien Triés - Compatible Wastream",
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": [
@@ -158,11 +132,15 @@ async def manifest():
 @app.get("/catalog/{type}/{id}.json")
 @app.get("/catalog/{type}/{id}/{extra}.json")
 async def get_catalog(type: str, id: str, extra: str = None):
+    # On s'assure de ne renvoyer que le type demandé
     items = db.get(id, [])
+    filtered_by_type = [i for i in items if i["type"] == type]
+    
     if extra and "genre=" in extra:
         g = extra.split("=")[1]
-        items = [i for i in items if g in i.get("genres", [])]
-    return {"metas": items}
+        filtered_by_type = [i for i in filtered_by_type if g in i.get("genres", [])]
+        
+    return {"metas": filtered_by_type}
 
 @app.get("/")
 async def status():
