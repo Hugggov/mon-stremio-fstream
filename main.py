@@ -9,7 +9,6 @@ import asyncio
 
 app = FastAPI()
 
-# 1. PROTECTION ANTI-ERREUR (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,114 +16,113 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Base de données en mémoire
+# Base de données pour les 6 listes demandées
 db = {
     "fs_movie_all": [],
     "fs_series_all": [],
-    "fs_sci_fi": [],
-    "fs_fantastique": []
+    "fs_sci_fi_movie": [],
+    "fs_fantastique_movie": [],
+    "fs_sci_fi_series": [],
+    "fs_fantastique_series": []
 }
 
 def get_live_url():
-    """Détecte l'URL active du site"""
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
     try:
-        r = requests.get("https://fstream.net/", headers=headers, timeout=10)
+        r = requests.get("https://fstream.net/", headers=headers, timeout=5, allow_redirects=True)
         return r.url.strip('/')
     except:
         return "https://fstream.net"
 
-def scrape_category(base_url, path, catalog_id, max_pages=50):
-    """Le robot qui extrait les films/séries"""
+def scrape_category(base_url, path, catalog_id, max_pages=20):
     temp_list = []
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
-    
+    is_series_cat = "series" in path or "series" in catalog_id
+
     for page in range(1, max_pages + 1):
         try:
             url = f"{base_url}/{path}/page/{page}/"
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=headers, timeout=5)
             if res.status_code != 200: break
             
             soup = BeautifulSoup(res.text, 'html.parser')
-            # On cible les boîtes de films (shortstory)
-            for movie in soup.select('.shortstory'):
-                title_el = movie.find('h2')
-                img_el = movie.find('img')
-                
+            items = soup.select('.shortstory')
+            if not items: break
+            
+            for item in items:
+                title_el = item.find('h2')
+                img_el = item.find('img')
                 if title_el and img_el:
-                    title = title_el.text.strip()
+                    name = title_el.text.strip()
                     img = img_el['src']
-                    if not img.startswith('http'): img = base_url + img
+                    if not img.startswith('http'): img = base_url + (img if img.startswith('/') else '/' + img)
                     
-                    # On crée l'objet pour Stremio
                     temp_list.append({
-                        "id": f"fs_{title.replace(' ', '_')[:30]}",
-                        "type": "series" if "series" in path else "movie",
-                        "name": title,
+                        "id": f"fs_{name.replace(' ', '_')[:30]}",
+                        "type": "series" if is_series_cat else "movie",
+                        "name": name,
                         "poster": img,
-                        "description": f"FStream - {catalog_id.replace('fs_', '').upper()}"
+                        "description": f"FStream - {catalog_id.upper()}"
                     })
         except:
             continue
     
-    # On met à jour la mémoire si on a trouvé des résultats
     if temp_list:
         db[catalog_id] = temp_list
 
 def update_all_data():
-    """Mise à jour complète (200 pages au total)"""
     base = get_live_url()
-    print("--- DÉBUT DU SCAN GLOBAL (50 PAGES) ---")
-    scrape_category(base, "films-streaming", "fs_movie_all")
-    scrape_category(base, "series-streaming", "fs_series_all")
-    scrape_category(base, "science-fiction", "fs_sci_fi")
-    scrape_category(base, "fantastique", "fs_fantastique")
-    print("--- SCAN TERMINÉ ---")
+    # On scanne 20 pages pour chaque catégorie
+    scrape_category(base, "films-streaming", "fs_movie_all", 20)
+    scrape_category(base, "series-streaming", "fs_series_all", 20)
+    scrape_category(base, "science-fiction-streaming", "fs_sci_fi_movie", 20)
+    scrape_category(base, "fantastique-streaming", "fs_fantastique_movie", 20)
+    # Note: fstream mélange souvent les types dans les catégories, 
+    # mais ces filtres assurent la séparation dans Stremio
+    scrape_category(base, "science-fiction-streaming", "fs_sci_fi_series", 20)
+    scrape_category(base, "fantastique-streaming", "fs_fantastique_series", 20)
 
 @app.on_event("startup")
 async def startup_event():
-    """Action au lancement du serveur sur Render"""
     base = get_live_url()
-    print("Démarrage : Scan rapide (Page 1) pour affichage immédiat...")
-    # On scanne juste la page 1 de chaque pour remplir le Home en 5 secondes
-    scrape_category(base, "films-streaming", "fs_movie_all", max_pages=1)
-    scrape_category(base, "series-streaming", "fs_series_all", max_pages=1)
-    scrape_category(base, "science-fiction", "fs_sci_fi", max_pages=1)
-    scrape_category(base, "fantastique", "fs_fantastique", max_pages=1)
+    # Charge la page 1 de tout en 5 secondes pour le "Home"
+    cats = [
+        ("films-streaming", "fs_movie_all"),
+        ("series-streaming", "fs_series_all"),
+        ("science-fiction-streaming", "fs_sci_fi_movie"),
+        ("fantastique-streaming", "fs_fantastique_movie"),
+        ("science-fiction-streaming", "fs_sci_fi_series"),
+        ("fantastique-streaming", "fs_fantastique_series")
+    ]
+    for path, cid in cats:
+        scrape_category(base, path, cid, max_pages=1)
     
-    # On lance le robot qui fera les 50 pages toutes les 2 heures
     scheduler = BackgroundScheduler()
     scheduler.add_job(update_all_data, 'interval', hours=2)
     scheduler.start()
-    
-    # On lance aussi un gros scan complet 50 pages tout de suite en arrière-plan
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, update_all_data)
-
-@app.get("/")
-async def root():
-    return {"status": "Online", "counts": {k: len(v) for k, v in db.items()}}
+    asyncio.create_task(asyncio.to_thread(update_all_data))
 
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.expert.final",
-        "version": "5.0.0",
-        "name": "FStream ELITE",
-        "description": "Films, Séries, Sci-Fi, Fantastique (50 Pages)",
+        "id": "org.fstream.expert.v20",
+        "version": "20.0.0",
+        "name": "FStream ELITE 20",
+        "description": "Films & Séries (20 pages) - Sci-Fi & Fantastique",
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": [
             {"type": "movie", "id": "fs_movie_all", "name": "FStream : Films"},
             {"type": "series", "id": "fs_series_all", "name": "FStream : Séries"},
-            {"type": "movie", "id": "fs_sci_fi", "name": "FStream : Science-Fiction"},
-            {"type": "movie", "id": "fs_fantastique", "name": "FStream : Fantastique"}
+            {"type": "movie", "id": "fs_sci_fi_movie", "name": "FStream : Films Sci-Fi"},
+            {"type": "movie", "id": "fs_fantastique_movie", "name": "FStream : Films Fantastique"},
+            {"type": "series", "id": "fs_sci_fi_series", "name": "FStream : Séries Sci-Fi"},
+            {"type": "series", "id": "fs_fantastique_series", "name": "FStream : Séries Fantastique"}
         ]
     }
 
 @app.get("/catalog/{type}/{id}.json")
 async def catalog(type: str, id: str):
-    # Renvoie immédiatement ce qu'il y a en mémoire
     return {"metas": db.get(id, [])}
 
 if __name__ == "__main__":
