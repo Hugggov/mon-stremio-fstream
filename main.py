@@ -21,26 +21,27 @@ DB_FILE = "database.json"
 db = {"fs_movie_all": [], "fs_series_all": [], "fs_sci_fi_movie": [], "fs_fantastique_movie": [], "fs_sci_fi_series": [], "fs_fantastique_series": []}
 
 def get_ephemeral_url():
-    """Analyse fstream.net pour trouver le lien vers le miroir de streaming"""
-    stable_page = "https://fstream.net"
-    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+    """Tente de trouver le miroir, sinon utilise une liste de secours"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'}
+    # 1. Essai de détection sur la page stable
     try:
-        res = requests.get(stable_page, headers=headers, timeout=10)
+        res = requests.get("https://fstream.net", headers=headers, timeout=8)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # On cherche le lien dans les boutons ou les textes mis en avant
-        links = soup.find_all('a', href=True)
-        for link in links:
+        for link in soup.find_all('a', href=True):
             href = link['href'].strip('/')
-            # On cherche un lien qui n'est pas fstream.net lui-même
             if "fstream" in href and "fstream.net" not in href:
-                print(f"🎯 Miroir détecté : {href}")
                 return href
+    except: pass
+
+    # 2. Secours : Teste les miroirs connus si la détection échoue
+    miroirs_possibles = ["https://fstream.li", "https://fstream.la", "https://fstream.re", "https://fstream.org"]
+    for m in miroirs_possibles:
+        try:
+            if requests.get(m, headers=headers, timeout=5).status_code == 200:
+                return m
+        except: continue
         
-        # Si rien n'est trouvé, on vérifie si la page a un bouton de redirection automatique
-        return res.url.strip('/')
-    except:
-        return stable_page
+    return "https://fstream.net"
 
 def scrape_category(base_url, path, catalog_id, max_pages=20):
     temp_list = []
@@ -53,12 +54,12 @@ def scrape_category(base_url, path, catalog_id, max_pages=20):
             if res.status_code != 200: break
             
             soup = BeautifulSoup(res.text, 'html.parser')
-            # FStream utilise souvent ces classes pour ses films
-            items = soup.select('.shortstory, .mov-item, .movie-item')
+            # On cherche large : shortstory, mov-item, ou tout lien avec un titre
+            items = soup.select('.shortstory, .mov-item, .movie-item, .poster')
             if not items: break
             
             for item in items:
-                t = item.find('h2') or item.find('div', class_='mov-t') or item.find('div', class_='title')
+                t = item.find(['h2', 'h3', 'div'], class_=['mov-t', 'title', 'tt']) or item.find('h2')
                 i = item.find('img')
                 if t and i:
                     name = t.text.strip()
@@ -71,18 +72,18 @@ def scrape_category(base_url, path, catalog_id, max_pages=20):
                         "type": "series" if "series" in catalog_id else "movie",
                         "name": name,
                         "poster": img,
-                        "description": f"FStream - {catalog_id.upper()}"
+                        "description": f"Source: {base_url.split('//')[-1]}"
                     })
         except: continue
     
     if temp_list:
         db[catalog_id] = temp_list
         with open(DB_FILE, "w") as f: json.dump(db, f)
-        print(f"✅ {len(temp_list)} titres trouvés pour {catalog_id}")
 
 def update_all_data():
     target = get_ephemeral_url()
-    # On définit les catégories exactes du site miroir
+    print(f"🚀 Lancement du scan sur : {target}")
+    # Chemins variés pour couvrir toutes les versions du site
     cats = [
         ("films", "fs_movie_all"), 
         ("series", "fs_series_all"), 
@@ -106,17 +107,17 @@ async def startup_event():
 async def root():
     return {
         "status": "Online", 
-        "mirror_utilisé": get_ephemeral_url(), 
-        "titres_en_mémoire": {k: len(v) for k, v in db.items()}
+        "url_detectee": get_ephemeral_url(), 
+        "titres_en_memoire": {k: len(v) for k, v in db.items()}
     }
 
 @app.get("/manifest.json")
 async def manifest():
     return {
-        "id": "org.fstream.radar.v20",
-        "version": "20.9.0",
+        "id": "org.fstream.elite.v20.force",
+        "version": "21.0.0",
         "name": "FStream ELITE 20",
-        "description": "Scan 20p sur URL éphémère",
+        "description": "Scan Miroir Intelligent",
         "resources": ["catalog"],
         "types": ["movie", "series"],
         "catalogs": [
